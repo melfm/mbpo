@@ -4,8 +4,8 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 
-from normalizer import Normalizer
-from normalizing_flows import MAF, RealNVP
+from mbpo.shaping.normalizer import Normalizer
+from mbpo.shaping.normalizing_flows import MAF, RealNVP
 #from td3fd.ddpg.gan_network import Generator, Discriminator
 
 tfd = tfp.distributions
@@ -127,10 +127,13 @@ class NFShaping(Shaping):
         # Prepare parameters
         self.sess = sess
         self.dims = dims
-
-        self.dimo = (self.dims["obs1"], )
+        self.dimo = self.dims["obs1"]
+        if isinstance(self.dimo, int):
+            self.dimo = (self.dimo, )
         # self.dimg = self.dims["g"]
-        self.dimu = (self.dims["acts"], )
+        self.dimu = self.dims["acts"]
+        if isinstance(self.dimu, int):
+            self.dimu = (self.dimu, )
         self.max_u = max_u
         self.num_bijectors = num_bijectors
         self.layer_sizes = layer_sizes
@@ -235,6 +238,23 @@ class NFShaping(Shaping):
         potential = np.mean(potential)
         return potential
 
+    def __getstate__(self):
+        """
+        Our policies can be loaded from pkl, but after unpickling you cannot continue training.
+        """
+        state = {k: v for k, v in self.init_args.items() if not k == "self"}
+        state["tf"] = self.sess.run(
+            [x for x in tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope=self.scope.name)]
+        )
+        return state
+
+    def __setstate__(self, state):
+        stored_vars = state.pop("tf")
+        self.__init__(**state)
+        vars = [x for x in tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope=self.scope.name)]
+        assert len(vars) == len(stored_vars)
+        node = [tf.compat.v1.assign(var, val) for var, val in zip(vars, stored_vars)]
+        self.sess.run(node)
 
 class GANShaping(Shaping):
     def __init__(

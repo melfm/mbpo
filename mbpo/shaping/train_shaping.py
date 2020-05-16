@@ -4,38 +4,38 @@ import numpy as np
 import os
 
 import utils
-from shaping import NFShaping
-from normalizer import Normalizer
+from mbpo.shaping.shaping import NFShaping
+from mbpo.shaping.normalizer import Normalizer
 import tensorflow as tf
 
 import pdb
-
 
 def train_shaping(state_dim, action_dim, max_action, args):
 
     setting = f"{args.env}_{args.seed}"
     buffer_name = f"{args.buffer_name}_{setting}"
     replay_buffer = utils.ReplayBuffer(state_dim, action_dim)
-    replay_buffer.load(f"./buffers/{buffer_name}")
+    replay_buffer.load(f"./mbpo/shaping/buffers/{buffer_name}")
 
+    model_path = '/home/melissa/Workspace/mbpo/mbpo/shaping/flow_model/checkpoints'
     # Get a tf session
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
     sess = tf.Session(config=config)
 
     demo_shapes = {}
-    demo_shapes["obs1"] = state_dim
-    demo_shapes["acts"] = action_dim
+    demo_shapes["obs1"] = (state_dim,)
+    demo_shapes["acts"] = (action_dim,)
 
     gamma = 0.99
     norm_eps = 0.01
     norm_clip = 5
 
-    num_demo = 1000
+    num_demo = 100
     eps_length = 1000
     max_u = max_action
-    max_num_transitions = num_demo * eps_length
-    batch_size = 256
+    # max_num_transitions = num_demo * eps_length
+    # batch_size = 256
     num_bijectors = 4
     layer_sizes = [256, 256]
     prm_loss_weight = 1.0
@@ -46,18 +46,24 @@ def train_shaping(state_dim, action_dim, max_action, args):
     num_epochs = 100
     norm_obs = True
 
-    demo_shaping = NFShaping(sess, demo_shapes, gamma, max_u, num_bijectors,
-                             layer_sizes, num_masked, potential_weight,
-                             norm_obs, norm_eps, norm_clip, prm_loss_weight,
-                             reg_loss_weight)
+    with tf.compat.v1.variable_scope("demo_shaping"):
+        demo_shaping = NFShaping(sess, demo_shapes, gamma, max_u, num_bijectors,
+                                layer_sizes, num_masked, potential_weight,
+                                norm_obs, norm_eps, norm_clip, prm_loss_weight,
+                                reg_loss_weight)
+        scope = tf.compat.v1.get_variable_scope()
+        saver = tf.compat.v1.train.Saver(
+            tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope=scope.name)
+        )
+
     init = tf.global_variables_initializer()
     sess.run(init)
 
-    
-
     for epoch in range(num_epochs):
         losses = np.empty(0)
-        for _ in range (10):
+        for i in range (num_demo):
+            if i == 0:
+                saver.restore(sess, model_path)
             batch = replay_buffer.sample()
             demo_shaping.update_stats(batch)
             d_loss, g_loss = demo_shaping.train(batch)
@@ -65,7 +71,10 @@ def train_shaping(state_dim, action_dim, max_action, args):
             if epoch % (num_epochs / 100) == (num_epochs / 100 - 1):
                 print("epoch: {} demo shaping loss: {}".format(
                     epoch, np.mean(losses)))
-                # mean_pot = self.shaping.evaluate(batch)
+                saver.save(sess, model_path)
+                mean_pot = demo_shaping.evaluate(batch)
+                print("epoch: {} mean potential on demo data: {}".format(
+                    epoch, mean_pot))
 
     #self.shaping.post_training_update(demo_data)
 

@@ -23,6 +23,8 @@ from mbpo.utils.visualization import visualize_policy
 from mbpo.utils.logging import Progress
 import mbpo.utils.filesystem as filesystem
 
+from mbpo.shaping.shaping import NFShaping
+
 
 def td_target(reward, discount, next_value):
     return reward + discount * next_value
@@ -37,39 +39,38 @@ class MBPO(RLAlgorithm):
         When to Trust Your Model: Model-Based Policy Optimization. 
         arXiv preprint arXiv:1906.08253. 2019.
     """
-
     def __init__(
-            self,
-            training_environment,
-            evaluation_environment,
-            policy,
-            Qs,
-            pool,
-            static_fns,
-            plotter=None,
-            tf_summaries=False,
-
-            lr=3e-4,
-            reward_scale=1.0,
-            target_entropy='auto',
-            discount=0.99,
-            tau=5e-3,
-            target_update_interval=1,
-            action_prior='uniform',
-            reparameterize=False,
-            store_extra_policy_info=False,
-
-            deterministic=False,
-            model_train_freq=250,
-            num_networks=7,
-            num_elites=5,
-            model_retain_epochs=20,
-            rollout_batch_size=100e3,
-            real_ratio=0.1,
-            rollout_schedule=[20,100,1,1],
-            hidden_dim=200,
-            max_model_t=None,
-            **kwargs,
+        self,
+        training_environment,
+        evaluation_environment,
+        policy,
+        Qs,
+        pool,
+        static_fns,
+        plotter=None,
+        tf_summaries=False,
+        lr=3e-4,
+        reward_scale=1.0,
+        target_entropy='auto',
+        discount=0.99,
+        tau=5e-3,
+        target_update_interval=1,
+        action_prior='uniform',
+        reparameterize=False,
+        store_extra_policy_info=False,
+        deterministic=False,
+        model_train_freq=250,
+        num_networks=7,
+        num_elites=5,
+        model_retain_epochs=20,
+        rollout_batch_size=100e3,
+        real_ratio=0.1,
+        rollout_schedule=[20, 100, 1, 1],
+        hidden_dim=200,
+        max_model_t=None,
+        shape_reward=True,
+        max_action=1.0,
+        **kwargs,
     ):
         """
         Args:
@@ -94,10 +95,15 @@ class MBPO(RLAlgorithm):
         """
 
         super(MBPO, self).__init__(**kwargs)
-
         obs_dim = np.prod(training_environment.observation_space.shape)
         act_dim = np.prod(training_environment.action_space.shape)
-        self._model = construct_model(obs_dim=obs_dim, act_dim=act_dim, hidden_dim=hidden_dim, num_networks=num_networks, num_elites=num_elites)
+        self.obs_dim_tup = training_environment.observation_space.shape
+        self.act_dim_tup = training_environment.action_space.shape
+        self._model = construct_model(obs_dim=obs_dim,
+                                      act_dim=act_dim,
+                                      hidden_dim=hidden_dim,
+                                      num_networks=num_networks,
+                                      num_elites=num_elites)
         self._static_fns = static_fns
         self.fake_env = FakeEnv(self._model, self._static_fns)
 
@@ -135,8 +141,7 @@ class MBPO(RLAlgorithm):
         self._reward_scale = reward_scale
         self._target_entropy = (
             -np.prod(self._training_environment.action_space.shape)
-            if target_entropy == 'auto'
-            else target_entropy)
+            if target_entropy == 'auto' else target_entropy)
         print('[ MBPO ] Target entropy: {}'.format(self._target_entropy))
 
         self._discount = discount
@@ -155,6 +160,9 @@ class MBPO(RLAlgorithm):
         assert len(action_shape) == 1, action_shape
         self._action_shape = action_shape
 
+        self.shape_reward = shape_reward
+        self.max_action = max_action
+
         self._build()
 
     def _build(self):
@@ -162,11 +170,13 @@ class MBPO(RLAlgorithm):
 
         self._init_global_step()
         self._init_placeholders()
+
+        self._init_shaping()
+
         self._init_actor_update()
         self._init_critic_update()
 
     def _train(self):
-        
         """Return a generator that performs RL training.
 
         Args:
@@ -185,8 +195,9 @@ class MBPO(RLAlgorithm):
         if not self._training_started:
             self._init_training()
 
-            self._initial_exploration_hook(
-                training_environment, self._initial_exploration_policy, pool)
+            self._initial_exploration_hook(training_environment,
+                                           self._initial_exploration_policy,
+                                           pool)
 
         self.sampler.initialize(training_environment, policy, pool)
 
@@ -201,14 +212,15 @@ class MBPO(RLAlgorithm):
             self._epoch_before_hook()
             gt.stamp('epoch_before_hook')
 
-            self._training_progress = Progress(self._epoch_length * self._n_train_repeat)
+            self._training_progress = Progress(self._epoch_length *
+                                               self._n_train_repeat)
             start_samples = self.sampler._total_samples
             for i in count():
                 samples_now = self.sampler._total_samples
                 self._timestep = samples_now - start_samples
 
                 if (samples_now >= start_samples + self._epoch_length
-                    and self.ready_to_train):
+                        and self.ready_to_train):
                     break
 
                 self._timestep_before_hook()
@@ -216,20 +228,25 @@ class MBPO(RLAlgorithm):
 
                 if self._timestep % self._model_train_freq == 0 and self._real_ratio < 1.0:
                     self._training_progress.pause()
-                    print('[ MBPO ] log_dir: {} | ratio: {}'.format(self._log_dir, self._real_ratio))
-                    print('[ MBPO ] Training model at epoch {} | freq {} | timestep {} (total: {}) | epoch train steps: {} (total: {})'.format(
-                        self._epoch, self._model_train_freq, self._timestep, self._total_timestep, self._train_steps_this_epoch, self._num_train_steps)
-                    )
+                    print('[ MBPO ] log_dir: {} | ratio: {}'.format(
+                        self._log_dir, self._real_ratio))
+                    print(
+                        '[ MBPO ] Training model at epoch {} | freq {} | timestep {} (total: {}) | epoch train steps: {} (total: {})'
+                        .format(self._epoch, self._model_train_freq,
+                                self._timestep, self._total_timestep,
+                                self._train_steps_this_epoch,
+                                self._num_train_steps))
 
-                    model_train_metrics = self._train_model(batch_size=256, max_epochs=None, holdout_ratio=0.2, max_t=self._max_model_t)
-                    model_metrics.update(model_train_metrics)
-                    gt.stamp('epoch_train_model')
-                    
+                    # model_train_metrics = self._train_model(batch_size=256, max_epochs=None, holdout_ratio=0.2, max_t=self._max_model_t)
+                    # model_metrics.update(model_train_metrics)
+                    # gt.stamp('epoch_train_model')
+
                     self._set_rollout_length()
                     self._reallocate_model_pool()
-                    model_rollout_metrics = self._rollout_model(rollout_batch_size=self._rollout_batch_size, deterministic=self._deterministic)
+                    model_rollout_metrics = self._rollout_model(
+                        rollout_batch_size=self._rollout_batch_size,
+                        deterministic=self._deterministic)
                     model_metrics.update(model_rollout_metrics)
-                    
 
                     gt.stamp('epoch_rollout_model')
                     # self._visualize_model(self._evaluation_environment, self._total_timestep)
@@ -248,12 +265,12 @@ class MBPO(RLAlgorithm):
             training_paths = self.sampler.get_last_n_paths(
                 math.ceil(self._epoch_length / self.sampler._max_path_length))
             gt.stamp('training_paths')
-            evaluation_paths = self._evaluation_paths(
-                policy, evaluation_environment)
+            evaluation_paths = self._evaluation_paths(policy,
+                                                      evaluation_environment)
             gt.stamp('evaluation_paths')
 
-            training_metrics = self._evaluate_rollouts(
-                training_paths, training_environment)
+            training_metrics = self._evaluate_rollouts(training_paths,
+                                                       training_environment)
             gt.stamp('training_metrics')
             if evaluation_paths:
                 evaluation_metrics = self._evaluate_rollouts(
@@ -275,32 +292,23 @@ class MBPO(RLAlgorithm):
 
             time_diagnostics = gt.get_times().stamps.itrs
 
-            diagnostics.update(OrderedDict((
-                *(
-                    (f'evaluation/{key}', evaluation_metrics[key])
-                    for key in sorted(evaluation_metrics.keys())
-                ),
-                *(
-                    (f'training/{key}', training_metrics[key])
-                    for key in sorted(training_metrics.keys())
-                ),
-                *(
-                    (f'times/{key}', time_diagnostics[key][-1])
-                    for key in sorted(time_diagnostics.keys())
-                ),
-                *(
-                    (f'sampler/{key}', sampler_diagnostics[key])
-                    for key in sorted(sampler_diagnostics.keys())
-                ),
-                *(
-                    (f'model/{key}', model_metrics[key])
-                    for key in sorted(model_metrics.keys())
-                ),
-                ('epoch', self._epoch),
-                ('timestep', self._timestep),
-                ('timesteps_total', self._total_timestep),
-                ('train-steps', self._num_train_steps),
-            )))
+            diagnostics.update(
+                OrderedDict((
+                    *((f'evaluation/{key}', evaluation_metrics[key])
+                      for key in sorted(evaluation_metrics.keys())),
+                    *((f'training/{key}', training_metrics[key])
+                      for key in sorted(training_metrics.keys())),
+                    *((f'times/{key}', time_diagnostics[key][-1])
+                      for key in sorted(time_diagnostics.keys())),
+                    *((f'sampler/{key}', sampler_diagnostics[key])
+                      for key in sorted(sampler_diagnostics.keys())),
+                    *((f'model/{key}', model_metrics[key])
+                      for key in sorted(model_metrics.keys())),
+                    ('epoch', self._epoch),
+                    ('timestep', self._timestep),
+                    ('timesteps_total', self._total_timestep),
+                    ('train-steps', self._num_train_steps),
+                )))
 
             if self._eval_render_mode is not None and hasattr(
                     evaluation_environment, 'render_rollouts'):
@@ -324,7 +332,8 @@ class MBPO(RLAlgorithm):
         filesystem.mkdir(save_path)
         weights = self._policy.get_weights()
         data = {'policy_weights': weights}
-        full_path = os.path.join(save_path, 'policy_{}.pkl'.format(self._total_timestep))
+        full_path = os.path.join(save_path,
+                                 'policy_{}.pkl'.format(self._total_timestep))
         print('Saving policy to: {}'.format(full_path))
         pickle.dump(data, open(full_path, 'wb'))
 
@@ -344,9 +353,10 @@ class MBPO(RLAlgorithm):
             y = dx * (max_length - min_length) + min_length
 
         self._rollout_length = int(y)
-        print('[ Model Length ] Epoch: {} (min: {}, max: {}) | Length: {} (min: {} , max: {})'.format(
-            self._epoch, min_epoch, max_epoch, self._rollout_length, min_length, max_length
-        ))
+        print(
+            '[ Model Length ] Epoch: {} (min: {}, max: {}) | Length: {} (min: {} , max: {})'
+            .format(self._epoch, min_epoch, max_epoch, self._rollout_length,
+                    min_length, max_length))
 
     def _reallocate_model_pool(self):
         obs_space = self._pool._observation_space
@@ -357,15 +367,15 @@ class MBPO(RLAlgorithm):
         new_pool_size = self._model_retain_epochs * model_steps_per_epoch
 
         if not hasattr(self, '_model_pool'):
-            print('[ MBPO ] Initializing new model pool with size {:.2e}'.format(
-                new_pool_size
-            ))
-            self._model_pool = SimpleReplayPool(obs_space, act_space, new_pool_size)
-        
+            print(
+                '[ MBPO ] Initializing new model pool with size {:.2e}'.format(
+                    new_pool_size))
+            self._model_pool = SimpleReplayPool(obs_space, act_space,
+                                                new_pool_size)
+
         elif self._model_pool._max_size != new_pool_size:
             print('[ MBPO ] Updating model pool | {:.2e} --> {:.2e}'.format(
-                self._model_pool._max_size, new_pool_size
-            ))
+                self._model_pool._max_size, new_pool_size))
             samples = self._model_pool.return_all_samples()
             new_pool = SimpleReplayPool(obs_space, act_space, new_pool_size)
             new_pool.add_samples(samples)
@@ -375,37 +385,47 @@ class MBPO(RLAlgorithm):
     def _train_model(self, **kwargs):
         env_samples = self._pool.return_all_samples()
         train_inputs, train_outputs = format_samples_for_training(env_samples)
-        model_metrics = self._model.train(train_inputs, train_outputs, **kwargs)
+        model_metrics = self._model.train(train_inputs, train_outputs,
+                                          **kwargs)
         return model_metrics
 
     def _rollout_model(self, rollout_batch_size, **kwargs):
-        print('[ Model Rollout ] Starting | Epoch: {} | Rollout length: {} | Batch size: {}'.format(
-            self._epoch, self._rollout_length, rollout_batch_size
-        ))
+        print(
+            '[ Model Rollout ] Starting | Epoch: {} | Rollout length: {} | Batch size: {}'
+            .format(self._epoch, self._rollout_length, rollout_batch_size))
         batch = self.sampler.random_batch(rollout_batch_size)
         obs = batch['observations']
         steps_added = []
         for i in range(self._rollout_length):
             act = self._policy.actions_np(obs)
-            
+
             next_obs, rew, term, info = self.fake_env.step(obs, act, **kwargs)
             steps_added.append(len(obs))
 
-            samples = {'observations': obs, 'actions': act, 'next_observations': next_obs, 'rewards': rew, 'terminals': term}
+            samples = {
+                'observations': obs,
+                'actions': act,
+                'next_observations': next_obs,
+                'rewards': rew,
+                'terminals': term
+            }
             self._model_pool.add_samples(samples)
 
             nonterm_mask = ~term.squeeze(-1)
             if nonterm_mask.sum() == 0:
-                print('[ Model Rollout ] Breaking early: {} | {} / {}'.format(i, nonterm_mask.sum(), nonterm_mask.shape))
+                print('[ Model Rollout ] Breaking early: {} | {} / {}'.format(
+                    i, nonterm_mask.sum(), nonterm_mask.shape))
                 break
 
             obs = next_obs[nonterm_mask]
 
         mean_rollout_length = sum(steps_added) / rollout_batch_size
         rollout_stats = {'mean_rollout_length': mean_rollout_length}
-        print('[ Model Rollout ] Added: {:.1e} | Model pool: {:.1e} (max {:.1e}) | Length: {} | Train rep: {}'.format(
-            sum(steps_added), self._model_pool.size, self._model_pool._max_size, mean_rollout_length, self._n_train_repeat
-        ))
+        print(
+            '[ Model Rollout ] Added: {:.1e} | Model pool: {:.1e} (max {:.1e}) | Length: {} | Train rep: {}'
+            .format(sum(steps_added), self._model_pool.size,
+                    self._model_pool._max_size, mean_rollout_length,
+                    self._n_train_repeat))
         return rollout_stats
 
     def _visualize_model(self, env, timestep):
@@ -415,15 +435,17 @@ class MBPO(RLAlgorithm):
         qpos = state[:qpos_dim]
         qvel = state[qpos_dim:]
 
-        print('[ Visualization ] Starting | Epoch {} | Log dir: {}\n'.format(self._epoch, self._log_dir))
-        visualize_policy(env, self.fake_env, self._policy, self._writer, timestep)
+        print('[ Visualization ] Starting | Epoch {} | Log dir: {}\n'.format(
+            self._epoch, self._log_dir))
+        visualize_policy(env, self.fake_env, self._policy, self._writer,
+                         timestep)
         print('[ Visualization ] Done')
         ## set env state
         env.unwrapped.set_state(qpos, qvel)
 
     def _training_batch(self, batch_size=None):
         batch_size = batch_size or self.sampler._batch_size
-        env_batch_size = int(batch_size*self._real_ratio)
+        env_batch_size = int(batch_size * self._real_ratio)
         model_batch_size = batch_size - env_batch_size
 
         ## can sample from the env pool even if env_batch_size == 0
@@ -433,7 +455,10 @@ class MBPO(RLAlgorithm):
             model_batch = self._model_pool.random_batch(model_batch_size)
 
             keys = env_batch.keys()
-            batch = {k: np.concatenate((env_batch[k], model_batch[k]), axis=0) for k in keys}
+            batch = {
+                k: np.concatenate((env_batch[k], model_batch[k]), axis=0)
+                for k in keys
+            }
         else:
             ## if real_ratio == 1.0, no model pool was ever allocated,
             ## so skip the model pool sampling
@@ -442,9 +467,8 @@ class MBPO(RLAlgorithm):
 
     def _init_global_step(self):
         self.global_step = training_util.get_or_create_global_step()
-        self._training_ops.update({
-            'increment_global_step': training_util._increment_global_step(1)
-        })
+        self._training_ops.update(
+            {'increment_global_step': training_util._increment_global_step(1)})
 
     def _init_placeholders(self):
         """Create input placeholders for the SAC algorithm.
@@ -456,8 +480,9 @@ class MBPO(RLAlgorithm):
             - reward
             - terminals
         """
-        self._iteration_ph = tf.placeholder(
-            tf.int64, shape=None, name='iteration')
+        self._iteration_ph = tf.placeholder(tf.int64,
+                                            shape=None,
+                                            name='iteration')
 
         self._observations_ph = tf.placeholder(
             tf.float32,
@@ -503,8 +528,8 @@ class MBPO(RLAlgorithm):
 
     def _get_Q_target(self):
         next_actions = self._policy.actions([self._next_observations_ph])
-        next_log_pis = self._policy.log_pis(
-            [self._next_observations_ph], next_actions)
+        next_log_pis = self._policy.log_pis([self._next_observations_ph],
+                                            next_actions)
 
         next_Qs_values = tuple(
             Q([self._next_observations_ph, next_actions])
@@ -512,11 +537,16 @@ class MBPO(RLAlgorithm):
 
         min_next_Q = tf.reduce_min(next_Qs_values, axis=0)
         next_value = min_next_Q - self._alpha * next_log_pis
-
-        Q_target = td_target(
-            reward=self._reward_scale * self._rewards_ph,
-            discount=self._discount,
-            next_value=(1 - self._terminals_ph) * next_value)
+        # Evaluate state_action logprobs
+        potential = self.demo_shaping.potential(self._observations_ph, None,
+                                           self._actions_ph)
+        if self.shape_reward:
+            reward = self._reward_scale * self._rewards_ph + potential
+        else:
+            reward = self._reward_scale * self._rewards_ph
+        Q_target = td_target(reward=reward,
+                             discount=self._discount,
+                             next_value=(1 - self._terminals_ph) * next_value)
 
         return Q_target
 
@@ -532,8 +562,7 @@ class MBPO(RLAlgorithm):
         assert Q_target.shape.as_list() == [None, 1]
 
         Q_values = self._Q_values = tuple(
-            Q([self._observations_ph, self._actions_ph])
-            for Q in self._Qs)
+            Q([self._observations_ph, self._actions_ph]) for Q in self._Qs)
 
         Q_losses = self._Q_losses = tuple(
             tf.losses.mean_squared_error(
@@ -541,23 +570,23 @@ class MBPO(RLAlgorithm):
             for Q_value in Q_values)
 
         self._Q_optimizers = tuple(
-            tf.train.AdamOptimizer(
-                learning_rate=self._Q_lr,
-                name='{}_{}_optimizer'.format(Q._name, i)
-            ) for i, Q in enumerate(self._Qs))
+            tf.train.AdamOptimizer(learning_rate=self._Q_lr,
+                                   name='{}_{}_optimizer'.format(Q._name, i))
+            for i, Q in enumerate(self._Qs))
         Q_training_ops = tuple(
-            tf.contrib.layers.optimize_loss(
-                Q_loss,
-                self.global_step,
-                learning_rate=self._Q_lr,
-                optimizer=Q_optimizer,
-                variables=Q.trainable_variables,
-                increment_global_step=False,
-                summaries=((
-                    "loss", "gradients", "gradient_norm", "global_gradient_norm"
-                ) if self._tf_summaries else ()))
-            for i, (Q, Q_loss, Q_optimizer)
-            in enumerate(zip(self._Qs, Q_losses, self._Q_optimizers)))
+            tf.contrib.layers.optimize_loss(Q_loss,
+                                            self.global_step,
+                                            learning_rate=self._Q_lr,
+                                            optimizer=Q_optimizer,
+                                            variables=Q.trainable_variables,
+                                            increment_global_step=False,
+                                            summaries=((
+                                                "loss", "gradients",
+                                                "gradient_norm",
+                                                "global_gradient_norm"
+                                            ) if self._tf_summaries else ()))
+            for i, (Q, Q_loss, Q_optimizer) in enumerate(
+                zip(self._Qs, Q_losses, self._Q_optimizers)))
 
         self._training_ops.update({'Q': tf.group(Q_training_ops)})
 
@@ -574,10 +603,9 @@ class MBPO(RLAlgorithm):
 
         assert log_pis.shape.as_list() == [None, 1]
 
-        log_alpha = self._log_alpha = tf.get_variable(
-            'log_alpha',
-            dtype=tf.float32,
-            initializer=0.0)
+        log_alpha = self._log_alpha = tf.get_variable('log_alpha',
+                                                      dtype=tf.float32,
+                                                      initializer=0.0)
         alpha = tf.exp(log_alpha)
 
         if isinstance(self._target_entropy, Number):
@@ -589,9 +617,8 @@ class MBPO(RLAlgorithm):
             self._alpha_train_op = self._alpha_optimizer.minimize(
                 loss=alpha_loss, var_list=[log_alpha])
 
-            self._training_ops.update({
-                'temperature_alpha': self._alpha_train_op
-            })
+            self._training_ops.update(
+                {'temperature_alpha': self._alpha_train_op})
 
         self._alpha = alpha
 
@@ -604,15 +631,12 @@ class MBPO(RLAlgorithm):
             policy_prior_log_probs = 0.0
 
         Q_log_targets = tuple(
-            Q([self._observations_ph, actions])
-            for Q in self._Qs)
+            Q([self._observations_ph, actions]) for Q in self._Qs)
         min_Q_log_target = tf.reduce_min(Q_log_targets, axis=0)
 
         if self._reparameterize:
-            policy_kl_losses = (
-                alpha * log_pis
-                - min_Q_log_target
-                - policy_prior_log_probs)
+            policy_kl_losses = (alpha * log_pis - min_Q_log_target -
+                                policy_prior_log_probs)
         else:
             raise NotImplementedError
 
@@ -621,8 +645,7 @@ class MBPO(RLAlgorithm):
         policy_loss = tf.reduce_mean(policy_kl_losses)
 
         self._policy_optimizer = tf.train.AdamOptimizer(
-            learning_rate=self._policy_lr,
-            name="policy_optimizer")
+            learning_rate=self._policy_lr, name="policy_optimizer")
         policy_train_op = tf.contrib.layers.optimize_loss(
             policy_loss,
             self.global_step,
@@ -630,11 +653,47 @@ class MBPO(RLAlgorithm):
             optimizer=self._policy_optimizer,
             variables=self._policy.trainable_variables,
             increment_global_step=False,
-            summaries=(
-                "loss", "gradients", "gradient_norm", "global_gradient_norm"
-            ) if self._tf_summaries else ())
+            summaries=("loss", "gradients", "gradient_norm",
+                       "global_gradient_norm") if self._tf_summaries else ())
 
         self._training_ops.update({'policy_train_op': policy_train_op})
+
+    def _init_shaping(self):
+        gamma = 0.99
+        norm_eps = 0.01
+        norm_clip = 5
+
+        num_demo = 1000
+        eps_length = 1000
+        max_u = self.max_action
+        max_num_transitions = num_demo * eps_length
+        batch_size = 256
+        num_bijectors = 4
+        layer_sizes = [256, 256]
+        prm_loss_weight = 1.0
+        reg_loss_weight = 200.0
+        potential_weight = 3.0
+        lr = 5e-4
+        num_masked = 2
+        num_epochs = 100
+        norm_obs = True
+
+        demo_shapes = {}
+        demo_shapes["obs1"] = self.obs_dim_tup
+        demo_shapes["acts"] = self.act_dim_tup
+        
+        with tf.compat.v1.variable_scope("demo_shaping"):
+            self.demo_shaping = NFShaping(self._session, demo_shapes, gamma, max_u,
+                                    num_bijectors, layer_sizes, num_masked,
+                                    potential_weight, norm_obs, norm_eps,
+                                    norm_clip, prm_loss_weight, reg_loss_weight)
+
+            scope = tf.compat.v1.get_variable_scope()
+            self.potential_saver = tf.compat.v1.train.Saver(
+                tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope=scope.name)
+            )
+        model_path = '/home/melissa/Workspace/mbpo/mbpo/shaping/flow_model/checkpoints'
+        self.potential_saver.restore(self._session, model_path)
 
     def _init_training(self):
         self._update_target(tau=1.0)
@@ -684,10 +743,7 @@ class MBPO(RLAlgorithm):
 
         return feed_dict
 
-    def get_diagnostics(self,
-                        iteration,
-                        batch,
-                        training_paths,
+    def get_diagnostics(self, iteration, batch, training_paths,
                         evaluation_paths):
         """Return diagnostic information as ordered dictionary.
 
@@ -701,10 +757,7 @@ class MBPO(RLAlgorithm):
         feed_dict = self._get_feed_dict(iteration, batch)
 
         (Q_values, Q_losses, alpha, global_step) = self._session.run(
-            (self._Q_values,
-             self._Q_losses,
-             self._alpha,
-             self.global_step),
+            (self._Q_values, self._Q_losses, self._alpha, self.global_step),
             feed_dict)
 
         diagnostics = OrderedDict({
