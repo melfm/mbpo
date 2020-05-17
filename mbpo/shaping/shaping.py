@@ -228,14 +228,15 @@ class NFShaping(Shaping):
                                 feed_dict=feed_dict)
         return loss, _
 
-    def evaluate(self, batch):
-        feed_dict = {}
-        feed_dict[self.demo_inputs_tf["obs1"]] = batch["obs1"]
-        feed_dict[self.demo_inputs_tf["acts"]] = batch["acts"]
+    def evaluate(self, batch=None, feed_dict=None):
+        if feed_dict is None:
+            feed_dict = {}
+            feed_dict[self.demo_inputs_tf["obs1"]] = batch["obs1"]
+            feed_dict[self.demo_inputs_tf["acts"]] = batch["acts"]
         # if self.dimg != (0,):
         #     feed_dict[self.demo_inputs_tf["g"]] = batch["g"]
         potential = self.sess.run(self.potential_output, feed_dict=feed_dict)
-        potential = np.mean(potential)
+        #potential = np.mean(potential)
         return potential
 
     def __getstate__(self):

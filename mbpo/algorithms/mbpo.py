@@ -211,7 +211,6 @@ class MBPO(RLAlgorithm):
 
             self._epoch_before_hook()
             gt.stamp('epoch_before_hook')
-
             self._training_progress = Progress(self._epoch_length *
                                                self._n_train_repeat)
             start_samples = self.sampler._total_samples
@@ -237,9 +236,9 @@ class MBPO(RLAlgorithm):
                                 self._train_steps_this_epoch,
                                 self._num_train_steps))
 
-                    # model_train_metrics = self._train_model(batch_size=256, max_epochs=None, holdout_ratio=0.2, max_t=self._max_model_t)
-                    # model_metrics.update(model_train_metrics)
-                    # gt.stamp('epoch_train_model')
+                    model_train_metrics = self._train_model(batch_size=256, max_epochs=None, holdout_ratio=0.2, max_t=self._max_model_t)
+                    model_metrics.update(model_train_metrics)
+                    gt.stamp('epoch_train_model')
 
                     self._set_rollout_length()
                     self._reallocate_model_pool()
@@ -508,6 +507,12 @@ class MBPO(RLAlgorithm):
             name='rewards',
         )
 
+        self._potentials_ph = tf.placeholder(
+            tf.float32,
+            shape=(None, 1),
+            name='potentials',
+        )
+
         self._terminals_ph = tf.placeholder(
             tf.float32,
             shape=(None, 1),
@@ -538,10 +543,8 @@ class MBPO(RLAlgorithm):
         min_next_Q = tf.reduce_min(next_Qs_values, axis=0)
         next_value = min_next_Q - self._alpha * next_log_pis
         # Evaluate state_action logprobs
-        potential = self.demo_shaping.potential(self._observations_ph, None,
-                                           self._actions_ph)
         if self.shape_reward:
-            reward = self._reward_scale * self._rewards_ph + potential
+            reward = self._reward_scale * self._rewards_ph + self._potentials_ph
         else:
             reward = self._reward_scale * self._rewards_ph
         Q_target = td_target(reward=reward,
@@ -666,16 +669,12 @@ class MBPO(RLAlgorithm):
         num_demo = 1000
         eps_length = 1000
         max_u = self.max_action
-        max_num_transitions = num_demo * eps_length
-        batch_size = 256
         num_bijectors = 4
         layer_sizes = [256, 256]
         prm_loss_weight = 1.0
         reg_loss_weight = 200.0
         potential_weight = 3.0
-        lr = 5e-4
         num_masked = 2
-        num_epochs = 100
         norm_obs = True
 
         demo_shapes = {}
@@ -717,6 +716,9 @@ class MBPO(RLAlgorithm):
 
         feed_dict = self._get_feed_dict(iteration, batch)
 
+        potential = self.demo_shaping.evaluate(feed_dict=feed_dict)
+        feed_dict[self._potentials_ph] = potential
+
         self._session.run(self._training_ops, feed_dict)
 
         if iteration % self._target_update_interval == 0:
@@ -725,13 +727,14 @@ class MBPO(RLAlgorithm):
 
     def _get_feed_dict(self, iteration, batch):
         """Construct TensorFlow feed_dict from sample batch."""
-
         feed_dict = {
             self._observations_ph: batch['observations'],
             self._actions_ph: batch['actions'],
             self._next_observations_ph: batch['next_observations'],
             self._rewards_ph: batch['rewards'],
             self._terminals_ph: batch['terminals'],
+            self.demo_shaping.demo_inputs_tf["obs1"]: batch['observations'],
+            self.demo_shaping.demo_inputs_tf["acts"]: batch['actions'],
         }
 
         if self._store_extra_policy_info:

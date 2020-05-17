@@ -73,8 +73,8 @@ def train_shaping(state_dim, action_dim, max_action, args):
                     epoch, np.mean(losses)))
                 saver.save(sess, model_path)
                 mean_pot = demo_shaping.evaluate(batch)
-                print("epoch: {} mean potential on demo data: {}".format(
-                    epoch, mean_pot))
+                # print("epoch: {} mean potential on demo data: {}".format(
+                #     epoch, mean_pot))
 
     #self.shaping.post_training_update(demo_data)
 
