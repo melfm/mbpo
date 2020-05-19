@@ -17,7 +17,7 @@ def train_shaping(state_dim, action_dim, max_action, args):
     replay_buffer = utils.ReplayBuffer(state_dim, action_dim)
     replay_buffer.load(f"./mbpo/shaping/buffers/{buffer_name}")
 
-    model_path = '/home/melissa/Workspace/mbpo/mbpo/shaping/flow_model/checkpoints'
+    model_path = '/usr/local/data/melfm/mbpo/mbpo/shaping/flow_model/checkpoints'
     # Get a tf session
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
@@ -62,8 +62,6 @@ def train_shaping(state_dim, action_dim, max_action, args):
     for epoch in range(num_epochs):
         losses = np.empty(0)
         for i in range (num_demo):
-            if i == 0:
-                saver.restore(sess, model_path)
             batch = replay_buffer.sample()
             demo_shaping.update_stats(batch)
             d_loss, g_loss = demo_shaping.train(batch)

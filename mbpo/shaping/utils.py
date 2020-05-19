@@ -30,7 +30,7 @@ class ReplayBuffer(object):
 		self.size = min(self.size + 1, self.max_size)
 
 
-	def sample(self, batch_size):
+	def sample(self, batch_size=256):
 		ind = np.random.randint(0, self.size, size=batch_size)
 		# Device lets you switch running code from either torch or tf
 		if self.device:

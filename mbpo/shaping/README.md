@@ -12,6 +12,7 @@ python mbpo/shaping/main.py --generate_buffer
 ```
 python mbpo/shaping/train_shaping.py
 ```
+For this make sure the path to the model dir is correct, its hard-coded atm.
 
 4. Train MBPO with reward_shaping enabled
 ```
