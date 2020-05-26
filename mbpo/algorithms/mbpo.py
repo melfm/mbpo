@@ -691,7 +691,7 @@ class MBPO(RLAlgorithm):
             self.potential_saver = tf.compat.v1.train.Saver(
                 tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope=scope.name)
             )
-        model_path = '/home/melissa/Workspace/mbpo/mbpo/shaping/flow_model/checkpoints'
+        model_path = '/usr/local/data/melfm/mbpo/mbpo/shaping/flow_model/checkpoints'
         self.potential_saver.restore(self._session, model_path)
 
     def _init_training(self):
@@ -758,6 +758,8 @@ class MBPO(RLAlgorithm):
         """
 
         feed_dict = self._get_feed_dict(iteration, batch)
+        potential = self.demo_shaping.evaluate(feed_dict=feed_dict)
+        feed_dict[self._potentials_ph] = potential
 
         (Q_values, Q_losses, alpha, global_step) = self._session.run(
             (self._Q_values, self._Q_losses, self._alpha, self.global_step),

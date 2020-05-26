@@ -4,7 +4,7 @@ params = {
     'domain': 'HalfCheetah',
     'task': 'v2',
 
-    'log_dir': '/usr/local/data/melfm/mbpo/halfcheetah_original',
+    'log_dir': '/usr/local/data/melfm/mbpo/halfcheetah_rew_shaping',
     'exp_name': 'defaults',
 
     'kwargs': {
