@@ -59,13 +59,17 @@ class GymAdapter(SoftlearningEnv):
 
         self._Serializable__initialize(locals())
         super(GymAdapter, self).__init__(domain, task, *args, **kwargs)
+        from mbpo.env.env_manager import EnvManager
 
-        if env is None:
-            assert (domain is not None and task is not None), (domain, task)
-            env_id = f"{domain}-{task}"
-            env = gym.envs.make(env_id, **kwargs)
-        else:
-            assert domain is None and task is None, (domain, task)
+        env_manager = EnvManager("YWFetchPegInHole2D-v0")
+        env = env_manager.get_env()
+
+        # if env is None:
+        #     assert (domain is not None and task is not None), (domain, task)
+        #     env_id = f"{domain}-{task}"
+        #     env = gym.envs.make(env_id, **kwargs)
+        # else:
+        #     assert domain is None and task is None, (domain, task)
 
         if isinstance(env, wrappers.TimeLimit) and unwrap_time_limit:
             # Remove the TimeLimit wrapper that sets 'done = True' when
@@ -77,8 +81,8 @@ class GymAdapter(SoftlearningEnv):
         if isinstance(env.observation_space, spaces.Dict):
             observation_keys = (
                 observation_keys or list(env.observation_space.spaces.keys()))
-        if normalize:
-            env = NormalizeActionWrapper(env)
+        # if normalize:
+        #     env = NormalizeActionWrapper(env)
 
         self._env = env
 

@@ -7,7 +7,6 @@ from collections import OrderedDict
 from numbers import Number
 from itertools import count
 import gtimer as gt
-import pdb
 
 import numpy as np
 import tensorflow as tf
@@ -95,9 +94,12 @@ class MBPO(RLAlgorithm):
         """
 
         super(MBPO, self).__init__(**kwargs)
-        obs_dim = np.prod(training_environment.observation_space.shape)
+        # for regular gym env
+        #obs_dim = np.prod(training_environment.observation_space.shape)
+        # for yuchen's modified env
+        obs_dim = np.prod(training_environment.observation_space['observation'].shape)
         act_dim = np.prod(training_environment.action_space.shape)
-        self.obs_dim_tup = training_environment.observation_space.shape
+        self.obs_dim_tup = training_environment.observation_space['observation'].shape
         self.act_dim_tup = training_environment.action_space.shape
         self._model = construct_model(obs_dim=obs_dim,
                                       act_dim=act_dim,

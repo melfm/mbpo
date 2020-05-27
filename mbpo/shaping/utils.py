@@ -70,3 +70,21 @@ class ReplayBuffer(object):
 		self.next_state[:self.size] = np.load(f"{save_folder}_next_state.npy")[:self.size]
 		self.reward[:self.size] = reward_buffer[:self.size]
 		self.not_done[:self.size] = np.load(f"{save_folder}_not_done.npy")[:self.size]
+
+	def load_yuchen_demo(self, save_folder, size=-1):
+
+		demo_data = np.load(f"{save_folder}.npz")
+		# Adjust crt_size if we're using a custom size
+		size = min(int(size), self.max_size) if size > 0 else self.max_size
+		# The data is trajectory per demo so (40, 40, x)
+		# The buffer expects (flattened_trajectories, x)
+		self.size = min(demo_data["r"].shape[0] * demo_data["r"].shape[1] , size)
+		# The state obs in the demo data has extra entry dimension, why? next_state?
+		self.size_obs = min(demo_data["o"].shape[0] * demo_data["o"].shape[1] , size)
+		# Flatten these
+		self.state[:self.size_obs] = demo_data["o"].reshape(-1, demo_data["o"].shape[-1])
+		self.action[:self.size] = demo_data["u"].reshape(-1, demo_data["u"].shape[-1])
+		# For training the potential, this does not matter as its not used
+		# self.next_state[:self.size_obs] = demo_data["o"].reshape(-1, demo_data["o"].shape[-1]) 
+		self.reward[:self.size] = demo_data["r"].reshape(-1, demo_data["r"].shape[-1])
+		self.not_done[:self.size] = demo_data["done"].reshape(-1, demo_data["done"].shape[-1])

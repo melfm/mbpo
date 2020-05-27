@@ -15,7 +15,8 @@ def train_shaping(state_dim, action_dim, max_action, args):
     setting = f"{args.env}_{args.seed}"
     buffer_name = f"{args.buffer_name}_{setting}"
     replay_buffer = utils.ReplayBuffer(state_dim, action_dim)
-    replay_buffer.load(f"./mbpo/shaping/buffers/{buffer_name}")
+    #replay_buffer.load(f"./mbpo/shaping/buffers/{buffer_name}")
+    replay_buffer.load_yuchen_demo(f"./mbpo/shaping/buffers/demo_data_old")
 
     model_path = '/usr/local/data/melfm/mbpo/mbpo/shaping/flow_model/checkpoints'
     # Get a tf session
@@ -93,12 +94,17 @@ if __name__ == "__main__":
                         action="store_true")  # If true, generate buffer
     args = parser.parse_args()
 
-    env = gym.make(args.env)
+    #env = gym.make(args.env)
+    from mbpo.env.env_manager import EnvManager
+
+    env_manager = EnvManager("YWFetchPegInHole2D-v0")
+    env = env_manager.get_env()
 
     env.seed(args.seed)
     np.random.seed(args.seed)
 
-    state_dim = env.observation_space.shape[0]
+    #state_dim = env.observation_space.shape[0]
+    state_dim = env.observation_space['observation'].shape[0]
     action_dim = env.action_space.shape[0]
     max_action = float(env.action_space.high[0])
 

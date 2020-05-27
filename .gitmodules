@@ -1,3 +1,6 @@
 [submodule "viskit"]
 	path = viskit
 	url = https://github.com/vitchyr/viskit.git
+[submodule "gym"]
+	path = gym
+	url = https://github.com/cheneyuwu/gym.git
