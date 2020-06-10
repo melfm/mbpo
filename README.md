@@ -11,7 +11,7 @@ Code to reproduce the experiments in [When to Trust Your Model: Model-Based Poli
 1. Install [MuJoCo 1.50](https://www.roboti.us/index.html) at `~/.mujoco/mjpro150` and copy your license key to `~/.mujoco/mjkey.txt`
 2. Clone `mbpo`
 ```
-git clone --recursive https://github.com/jannerm/mbpo.git
+git clone --recursive https://github.com/melfm/mbpo
 ```
 3. Create a conda environment and install mbpo
 ```
