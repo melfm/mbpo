@@ -24,7 +24,6 @@ import mbpo.utils.filesystem as filesystem
 
 from mbpo.shaping.shaping import NFShaping
 
-
 def td_target(reward, discount, next_value):
     return reward + discount * next_value
 
@@ -34,8 +33,8 @@ class MBPO(RLAlgorithm):
 
     References
     ----------
-        Michael Janner, Justin Fu, Marvin Zhang, Sergey Levine. 
-        When to Trust Your Model: Model-Based Policy Optimization. 
+        Michael Janner, Justin Fu, Marvin Zhang, Sergey Levine.
+        When to Trust Your Model: Model-Based Policy Optimization.
         arXiv preprint arXiv:1906.08253. 2019.
     """
     def __init__(
@@ -92,7 +91,6 @@ class MBPO(RLAlgorithm):
                 the policy derived using the reparameterization trick. We use
                 a likelihood ratio based estimator otherwise.
         """
-
         super(MBPO, self).__init__(**kwargs)
         # for regular gym env
         #obs_dim = np.prod(training_environment.observation_space.shape)
@@ -134,6 +132,21 @@ class MBPO(RLAlgorithm):
         self._Q_targets = tuple(tf.keras.models.clone_model(Q) for Q in Qs)
 
         self._pool = pool
+        # TODO: Fix hard-coded path
+        demo_data = np.load("/usr/local/data/melfm/mbpo/mbpo/shaping/buffers/demo_data_old.npz")
+        # The demo data needs the next observations
+        # TODO : Fix the skip last trajectory. The data should contain separate
+        # observations and next_observations.
+        samples = {
+                'observations': demo_data["o"].reshape(-1, 6)[:-40],
+                'actions': demo_data["u"].reshape(-1, 4),
+                'next_observations': demo_data["o"].reshape(-1, 6)[:-40],
+                'rewards': demo_data["r"].reshape(-1, 1),
+                'terminals': demo_data["done"].reshape(-1, 1)
+        }
+        self._demo_pool = SimpleReplayPool(pool._observation_space['observation'], pool._action_space, pool._max_size)
+        self._demo_pool.add_samples(samples)
+
         self._plotter = plotter
         self._tf_summaries = tf_summaries
 
@@ -166,6 +179,7 @@ class MBPO(RLAlgorithm):
         self.max_action = max_action
 
         self._build()
+
 
     def _build(self):
         self._training_ops = {}
@@ -360,7 +374,7 @@ class MBPO(RLAlgorithm):
                     min_length, max_length))
 
     def _reallocate_model_pool(self):
-        obs_space = self._pool._observation_space
+        obs_space = self._pool._observation_space['observation']
         act_space = self._pool._action_space
 
         rollouts_per_epoch = self._rollout_batch_size * self._epoch_length / self._model_train_freq
@@ -402,7 +416,6 @@ class MBPO(RLAlgorithm):
 
             next_obs, rew, term, info = self.fake_env.step(obs, act, **kwargs)
             steps_added.append(len(obs))
-
             samples = {
                 'observations': obs,
                 'actions': act,
@@ -454,10 +467,10 @@ class MBPO(RLAlgorithm):
 
         if model_batch_size > 0:
             model_batch = self._model_pool.random_batch(model_batch_size)
-
-            keys = env_batch.keys()
+            demo_batch = self._demo_pool.random_batch(model_batch_size)
+            keys = model_batch.keys()
             batch = {
-                k: np.concatenate((env_batch[k], model_batch[k]), axis=0)
+                k: np.concatenate((env_batch[k], model_batch[k], demo_batch[k]), axis=0)
                 for k in keys
             }
         else:
@@ -682,7 +695,7 @@ class MBPO(RLAlgorithm):
         demo_shapes = {}
         demo_shapes["obs1"] = self.obs_dim_tup
         demo_shapes["acts"] = self.act_dim_tup
-        
+
         with tf.compat.v1.variable_scope("demo_shaping"):
             self.demo_shaping = NFShaping(self._session, demo_shapes, gamma, max_u,
                                     num_bijectors, layer_sizes, num_masked,
