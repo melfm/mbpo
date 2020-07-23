@@ -61,12 +61,12 @@ class MBPO(RLAlgorithm):
         num_networks=7,
         num_elites=5,
         model_retain_epochs=20,
-        rollout_batch_size=100e3,
+        rollout_batch_size=1e3,
         real_ratio=0.1,
         rollout_schedule=[20, 100, 1, 1],
         hidden_dim=200,
         max_model_t=None,
-        shape_reward=True,
+        shape_reward=False,
         max_action=1.0,
         **kwargs,
     ):
@@ -133,19 +133,22 @@ class MBPO(RLAlgorithm):
 
         self._pool = pool
         # TODO: Fix hard-coded path
-        demo_data = np.load("/usr/local/data/melfm/mbpo/mbpo/shaping/buffers/demo_data_old.npz")
-        # The demo data needs the next observations
-        # TODO : Fix the skip last trajectory. The data should contain separate
-        # observations and next_observations.
-        samples = {
-                'observations': demo_data["o"].reshape(-1, 6)[:-40],
-                'actions': demo_data["u"].reshape(-1, 4),
-                'next_observations': demo_data["o"].reshape(-1, 6)[:-40],
-                'rewards': demo_data["r"].reshape(-1, 1),
-                'terminals': demo_data["done"].reshape(-1, 1)
-        }
-        self._demo_pool = SimpleReplayPool(pool._observation_space['observation'], pool._action_space, pool._max_size)
-        self._demo_pool.add_samples(samples)
+        # Only do this if we are shaping the reward
+        print("Are we shaping the reward: {0}".format(shape_reward)) #TODO: remove this line once debugging is done
+        if (shape_reward):
+            demo_data = np.load("./mbpo/demonstration_data/demo_data_old.npz")
+            # The demo data needs the next observations
+            # TODO : Fix the skip last trajectory. The data should contain separate
+            # observations and next_observations.
+            samples = {
+                    'observations': demo_data["o"].reshape(-1, 6)[:-40],
+                    'actions': demo_data["u"].reshape(-1, 4),
+                    'next_observations': demo_data["o"].reshape(-1, 6)[:-40],
+                    'rewards': demo_data["r"].reshape(-1, 1),
+                    'terminals': demo_data["done"].reshape(-1, 1)
+            }
+            self._demo_pool = SimpleReplayPool(pool._observation_space['observation'], pool._action_space, pool._max_size)
+            self._demo_pool.add_samples(samples)
 
         self._plotter = plotter
         self._tf_summaries = tf_summaries
@@ -187,7 +190,8 @@ class MBPO(RLAlgorithm):
         self._init_global_step()
         self._init_placeholders()
 
-        self._init_shaping()
+        if (self.shape_reward):
+            self._init_shaping()
 
         self._init_actor_update()
         self._init_critic_update()
@@ -467,12 +471,15 @@ class MBPO(RLAlgorithm):
 
         if model_batch_size > 0:
             model_batch = self._model_pool.random_batch(model_batch_size)
-            demo_batch = self._demo_pool.random_batch(model_batch_size)
+            if (self.shape_reward):
+                demo_batch = self._demo_pool.random_batch(model_batch_size)
+                keys = model_batch.keys()
+                batch = {
+                    k: np.concatenate((env_batch[k], model_batch[k], demo_batch[k]), axis=0)
+                    for k in keys
+                }
             keys = model_batch.keys()
-            batch = {
-                k: np.concatenate((env_batch[k], model_batch[k], demo_batch[k]), axis=0)
-                for k in keys
-            }
+            batch = { k: np.concatenate((env_batch[k], model_batch[k]), axis=0) for k in keys}
         else:
             ## if real_ratio == 1.0, no model pool was ever allocated,
             ## so skip the model pool sampling
@@ -558,8 +565,11 @@ class MBPO(RLAlgorithm):
         min_next_Q = tf.reduce_min(next_Qs_values, axis=0)
         next_value = min_next_Q - self._alpha * next_log_pis
         # Evaluate state_action logprobs
+
+        #shape the reward function
         if self.shape_reward:
-            reward = self._reward_scale * self._rewards_ph + self._potentials_ph
+            reward = self._reward_scale * self._rewards_ph + self.demo_shaping.reward(self._observations_ph, None, self._actions_ph, 
+                                                                                    self._next_observations_ph, None, next_actions)
         else:
             reward = self._reward_scale * self._rewards_ph
         Q_target = td_target(reward=reward,
@@ -652,9 +662,15 @@ class MBPO(RLAlgorithm):
             Q([self._observations_ph, actions]) for Q in self._Qs)
         min_Q_log_target = tf.reduce_min(Q_log_targets, axis=0)
 
+        #include potential in loss function when computing optimal policy
         if self._reparameterize:
-            policy_kl_losses = (alpha * log_pis - min_Q_log_target -
+            if self.shape_reward:
+                #add the shaping potential back into the Q function
+                potential = self.demo_shaping.potential(self._observation_ph, None, actions)
+                policy_kl_losses = (alpha * log_pis - min_Q_log_target - potential -
                                 policy_prior_log_probs)
+            else:
+                policy_kl_losses = (alpha * log_pis - min_Q_log_target - policy_prior_log_probs)
         else:
             raise NotImplementedError
 
@@ -706,7 +722,7 @@ class MBPO(RLAlgorithm):
             self.potential_saver = tf.compat.v1.train.Saver(
                 tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope=scope.name)
             )
-        model_path = '/usr/local/data/melfm/mbpo/mbpo/shaping/flow_model/checkpoints'
+        model_path = '/home/kamran/mbpo/mbpo/shaping_model/checkpoints'
         self.potential_saver.restore(self._session, model_path)
 
     def _init_training(self):
@@ -731,9 +747,6 @@ class MBPO(RLAlgorithm):
 
         feed_dict = self._get_feed_dict(iteration, batch)
 
-        potential = self.demo_shaping.evaluate(feed_dict=feed_dict)
-        feed_dict[self._potentials_ph] = potential
-
         self._session.run(self._training_ops, feed_dict)
 
         if iteration % self._target_update_interval == 0:
@@ -742,14 +755,13 @@ class MBPO(RLAlgorithm):
 
     def _get_feed_dict(self, iteration, batch):
         """Construct TensorFlow feed_dict from sample batch."""
+
         feed_dict = {
             self._observations_ph: batch['observations'],
             self._actions_ph: batch['actions'],
             self._next_observations_ph: batch['next_observations'],
             self._rewards_ph: batch['rewards'],
             self._terminals_ph: batch['terminals'],
-            self.demo_shaping.demo_inputs_tf["obs1"]: batch['observations'],
-            self.demo_shaping.demo_inputs_tf["acts"]: batch['actions'],
         }
 
         if self._store_extra_policy_info:
@@ -773,8 +785,6 @@ class MBPO(RLAlgorithm):
         """
 
         feed_dict = self._get_feed_dict(iteration, batch)
-        potential = self.demo_shaping.evaluate(feed_dict=feed_dict)
-        feed_dict[self._potentials_ph] = potential
 
         (Q_values, Q_losses, alpha, global_step) = self._session.run(
             (self._Q_values, self._Q_losses, self._alpha, self.global_step),

@@ -16,9 +16,9 @@ def train_shaping(state_dim, action_dim, max_action, args):
     buffer_name = f"{args.buffer_name}_{setting}"
     replay_buffer = utils.ReplayBuffer(state_dim, action_dim)
     #replay_buffer.load(f"./mbpo/shaping/buffers/{buffer_name}")
-    replay_buffer.load_yuchen_demo(f"./mbpo/shaping/buffers/demo_data_old")
+    replay_buffer.load_yuchen_demo(f"../demonstration_data/demo_data.npz")
 
-    model_path = '/usr/local/data/melfm/mbpo/mbpo/shaping/flow_model/checkpoints'
+    model_path = '../shaping_model/'
     # Get a tf session
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True

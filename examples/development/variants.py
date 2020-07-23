@@ -57,7 +57,7 @@ ALGORITHM_PARAMS_BASE = {
         'model_reset_freq': 1000,
         'model_train_freq': 250,
         'retain_model_epochs': 2,
-        'rollout_batch': 100e3,
+        'rollout_batch': 1e3,
         'rollout_length': 1,
         'deterministic': False,
         'num_networks': 7,
@@ -145,6 +145,7 @@ NUM_EPOCHS_PER_DOMAIN = {
     'HalfCheetah': int(3e3),
     'Walker2d': int(3e3),
     'Ant': int(3e3),
+    'YWFetchPegInHole2D': int(2e3),
     'Humanoid': int(1e4),
     'Pusher2d': int(2e3),
     'HandManipulatePen': int(1e4),
@@ -178,6 +179,8 @@ ENVIRONMENT_PARAMS = {
     },
     'HalfCheetah': {  # 6 DoF
     },
+    'YWFetchPegInHole2D':{
+    }
     'Walker2d': {  # 6 DoF
     },
     'Ant': {  # 8 DoF
